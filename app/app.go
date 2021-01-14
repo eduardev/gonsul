@@ -1,73 +1,64 @@
 package app
 
 import (
-	"github.com/miniclip/gonsul/configuration"
-	"github.com/miniclip/gonsul/errorutil"
-	"github.com/miniclip/gonsul/hook"
-	"github.com/miniclip/gonsul/once"
-	"github.com/miniclip/gonsul/poll"
+	"github.com/miniclip/gonsul/internal/config"
 
-	"os/signal"
-	"syscall"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 )
 
-var config configuration.Config // Set our Configuration as global package scope
-var logger errorutil.Logger     // Set our Logger as global package scope
+// Application ...
+type Application struct {
+	config  config.IConfig
+	once    Ionce
+	hook    Ihook
+	poll    Ipoll
+	sigChan chan os.Signal
+}
 
-func Start(conf *configuration.Config, log *errorutil.Logger) {
-	// Set the appropriate values for our package global variables
-	config = *conf
-	logger = *log
+// NewApplication ...
+func NewApplication(
+	config config.IConfig,
+	once Ionce,
+	hook Ihook,
+	poll Ipoll,
+	sigChan chan os.Signal,
+) *Application {
+	return &Application{
+		config:  config,
+		once:    once,
+		hook:    hook,
+		poll:    poll,
+		sigChan: sigChan,
+	}
+}
 
-	// Create our channel for the Signal and relay Signal Notify to it
-	sigChannel := make(chan os.Signal)
-	signal.Notify(sigChannel, syscall.SIGINT, syscall.SIGTERM)
+// Start ...
+func (a *Application) Start() {
+	// Relay all Signals to our channel
+	signal.Notify(a.sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	// Spin a routine to wait for a Signal
 	go func() {
 		// Wait for a signal through the channel
-		<-sigChannel
+		<-a.sigChan
+		fmt.Print(" Interrupt received, waiting for work to finish... ")
 		// Try to write to working channel (thus waiting for any in progress non interruptible work)
-		config.Working <- false
+		a.config.WorkingChan() <- false
 		// Exit
-		fmt.Print(" Interrupt received... Quitting!")
+		fmt.Print(" Quitting!")
 		os.Exit(0)
 	}()
 
 	// Switch our run strategy
-	switch config.GetStrategy() {
-	case configuration.StrategyDry, configuration.StrategyOnce:
-		startOnce()
-
-	case configuration.StrategyHook:
-		startHook()
-
-	case configuration.StrategyPoll:
-		startPolling()
-
+	switch a.config.GetStrategy() {
+	case config.StrategyDry, config.StrategyOnce:
+		a.once.RunOnce()
+	case config.StrategyHook:
+		a.hook.RunHook()
+	case config.StrategyPoll:
+		a.poll.RunPoll()
 	}
-}
-
-func startPolling() {
-	logger.PrintInfo("Starting in mode: POLL")
-
-	poll.Start(&config, &logger)
-}
-
-func startHook() {
-	logger.PrintInfo("Starting in mode: HOOK")
-
-	hook.Start(&config, &logger)
-}
-
-func startOnce() {
-	if config.GetStrategy() == configuration.StrategyDry {
-		logger.PrintInfo("Starting in mode: DRYRUN")
-	} else if config.GetStrategy() == configuration.StrategyOnce {
-		logger.PrintInfo("Starting in mode: ONCE")
-	}
-
-	once.Start(&config, &logger)
 }

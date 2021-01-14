@@ -1,9 +1,19 @@
 # Gonsul - A Git to Consul tool, in Go!
+
+![Docker image](https://github.com/miniclip/gonsul/workflows/Docker%20image/badge.svg?branch=master)
+
 This tool serves as an entry point for the Hashicorp's Consul KV store. Not only because Consul lacks of a built in 
 audit mechanism, but also because having configurations managed in GIT, using a gitflow or a normal 
 development-to-master flow is much friendly and familiar to any development team to manage configurations.  
 
 Downloads in [releases page](https://github.com/miniclip/gonsul/releases).
+
+## Important Notes!
+**The master branch is being refactored**. No (big) breaking changes will happen but codebase is under significant changes. 
+Mainly adding tests, makefile, and code refactor/cleanup.
+
+Please use the releases/downloads page.  
+Instructions for development will be added soon!
 
 ## How It Processes a Repository
 Gonsul will (optionally) clone your repository into the filesystem. After, it will recursively parse all the files in 
@@ -73,8 +83,16 @@ tasks are natively handled by Gonsul, as long as filesystem and network permissi
 
 
 ## Available Flags
-Below are all available command line flags for starting **Gonsul**
+Below are all available command line flags for starting **Gonsul**. Flags may be specified on the command line, using
+environment variables (flag prefixed with "GONSUL_", converted to upper case, and "-" changed to "_", e.g.
+`GONSUL_REPO_URL`), or using a configuration file (`--config=`). The order of precedence for specifying flags is:
+1. Command line options
+2. Environment variables
+3. Configuration file
+4. Default values
+
 ```bash
+--config=
 --strategy=
 --repo-url=
 --repo-ssh-key=
@@ -92,8 +110,19 @@ Below are all available command line flags for starting **Gonsul**
 --allow-deletes=
 --poll-interval=
 --input-ext=
+--keep-ext=
 ```
-Below is the full description for each individual command line flag
+Below is the full description for each individual command line flag.
+
+
+### `--config`
+> `require:` **no**
+> `example:` **`--config=gonsul.conf`**
+
+This specifies a file with configuration settings for the options described below. File syntax:
+- Empty lines and lines beginning with a "#" character are ignored.
+- Flags and values can be separated with whitespace or the "=" character (`strategy ONCE` or `strategy=DRYRUN`).
+- Booleans can be empty (true) or set with "1/0", "t/f", "T/F", "true/false", "TRUE/FALSE", or "True/False".
 
 
 ### `--strategy` 
@@ -158,8 +187,8 @@ This is the branch name that Gonsul should try to checkout.
 
 
 ### `--repo-remote-name` 
-> `require: `  **no**  
-> `default: `  **origin**  
+> `require:` **no**  
+> `default:` **origin**  
 > `example:` **`--repo-remote-name=upstream_name`**
 
 This is the name of the remote configured on the repository. We need it to properly trigger some PULL and CHECKOUT 
@@ -178,6 +207,9 @@ parseable.
 to look for a Consul KV path that starts with `configs/relative/path` but instead, it will from any deeper path from 
 this folder down.
 
+**Note2:** If this flag is not set, the below value of `--repo-root` will be used as the hierarchy path within Consul, 
+which is normally not desired. Most of the times we should/must use this flag.
+
 
 ### `--repo-root` 
 > `require:` **yes**  
@@ -187,6 +219,9 @@ This is the absolute path where Gonsul should clone the repository in your OS fi
 when provided without providing the previous flag `--repo-url`, Gonsul will try to parse the given absolute path without 
 using GIT. This could be useful if you want to use Gonsul as filesystem parser and Consul sync without doing any GIT 
 operations.
+
+**Note:** This value/path will be used as the the hierarchy path on Consul if no value is given on above `--repo-base-path` 
+which in many cases is not intended. Most of the times, we should also use the flag above.
 
 
 ### `--consul-url` 
@@ -239,7 +274,25 @@ previous folder/file hierarchy and create single entries in Consul KV for each v
 
 **Note:** Because Consul is a simple KV Store, where **all values are strings**, there are some caveats regarding the 
 JSON file expanding. Some important ones are:
-- Any **arrays found** are inserted into Consul a bracketed comma separated value string, 
+- Any **arrays found** are inserted into Consul as a bracketed comma separated value string, 
+for example: `["val1","val2","otherval"]`
+- All the **boolean values** are inserted into Consul as strings `true` and `false`. This might break some applications 
+when reading configuration, as they will be just strings after all.
+- All the **numeric values** will obviously be inserted into consul as strings. Again, take that into consideration when 
+reading configurations from your app as any numeric values will be strings when coming out from Consul.
+
+
+### `--expand-yaml` 
+> `require:` **no**  
+> `default:` **false**  
+> `example:` **`--expand-yaml=true`**
+
+This will tell Gonsul how to treat YAML files. If true, Gonsul will traverse the YAML files and append the path to the 
+previous folder/file hierarchy and create single entries in Consul KV for each value.
+
+**Note:** Because Consul is a simple KV Store, where **all values are strings**, there are some caveats regarding the 
+YAML file expanding. Some important ones are:
+- Any **arrays found** are inserted into Consul as a bracketed comma separated value string, 
 for example: `["val1","val2","otherval"]`
 - All the **boolean values** are inserted into Consul as strings `true` and `false`. This might break some applications 
 when reading configuration, as they will be just strings after all.
@@ -277,18 +330,21 @@ no secrets are written to disk.
 > `default:` **false**  
 > `example:` **`--allow-deletes=true`**
 
-This instructs Gonsul how it should proceed in case some Consul deletes are to be made. If the value for this flag is 
-`true`, Gonsul will proceed with the delete operations, but if instead is `false`, Gonsul will not proceed with the 
-deletes, and depending on the `--strategy` it is running at, it respondes with some different behaviors, such as:
-- **`ONCE`** When running in once mode, Gonsul will terminate with __error code 10__ and output to console all the 
-Consul KV paths that are supposed to be deleted.
-- **`HOOK`** Gonsul will repond to the HTTP request with error 503 and will also return the following headers and values:
-	- `X-Gonsul-Error:10`
-	- `X-Gonsul-Delete-Paths:path1/to/be/deleted,path2/to/be/deleted`
-- **`POLL`** Gonsul will log all the paths to be deleted as ERRORS and carry on, over and over. In this mode you should 
-monitor Gonsul logs to detect any found errors, and react appropriately. The errors will follow the syntax: 
-	- `[ERROR] [28-01-2018 17:38:25 1234] error-10 path1/to/be/deleted`
-	- `[ERROR] [28-01-2018 17:38:25 5678] error-10 path2/to/be/deleted`
+This option sets Gonsul behaviour on how it should proceed in case some Consul deletes are to be made. 
+
+- **`true`** With this mode deletes are allowed and Gonsul will proceed with the delete operations, removed files from the repo and/or files added directly on consul k/v will be deleted.
+- **`skip`** In this mode, Gonsul will skip the deletion check and operations and will just sync/push files to consul k/v path (can lead to inconsistencies at the consul k/v path since removed files from the repo and/or files added directly on consul k/v will stay in the consul path because we are skipping deletions).
+- **`false`** _this is the default mode_ and Gonsul will not proceed with the deletes, and depending on the `--strategy` it is running at, will respond with some different behaviors, such as:
+
+    1. **`ONCE`** When running in once mode, Gonsul will terminate with __error code 10__ and output to console all the Consul KV paths that are supposed to be deleted.
+
+    2. **`HOOK`** Gonsul will repond to the HTTP request with error 503 and will also return the following headers and values:
+        - `X-Gonsul-Error:10`
+        - `X-Gonsul-Delete-Paths:path1/to/be/deleted,path2/to/be/deleted`
+
+    3. **`POLL`** Gonsul will log all the paths to be deleted as ERRORS and carry on, over and over. In this mode you should monitor Gonsul logs to detect any found errors, and react appropriately. The errors will follow the syntax: 
+        - `[ERROR] [28-01-2018 17:38:25 1234] error-10 path1/to/be/deleted`
+        - `[ERROR] [28-01-2018 17:38:25 5678] error-10 path2/to/be/deleted`
 
 
 ### `--poll-interval`
@@ -307,6 +363,21 @@ This is the number of seconds you want Gonsul to wait between checks on the repo
 
 This is the file extensions that Gonsul should consider as inputs to populate our Consul. Please set each extension 
 without the dot, and separate each extension with a comma.
+
+### `--keep-ext`
+> `require:` **no**  
+> `default:` **false**  
+> `example:` **`--keep-ext=true`**
+
+Gonsul default behavior is to remove/trim the filextension from the filename when pushing files to consul k/v path, if this option is set to true gonsul will keep the file extension.
+
+### `--timeout`
+> `require:` **no**  
+> `default:` **5**  
+> `example:` **`--timeout=20`**
+
+The number of seconds for the client to wait for a response from Consul
+
 
 ## Gonsul Exit Codes
 Whenever an error occurs, and Gonsul exits with a code other than 0, we try to return a meaningful code, such as:
@@ -333,4 +404,7 @@ when processing the filesystem and it found a corrupted JSON file - check your J
 
 * **70** - This error occurs when secret replacement fails.
 
-* **80** - This is a generic HTTP error. Run Gonsul in debug mode to look for more information regarding the error. 
+* **80** - This is a generic HTTP error. Run Gonsul in debug mode to look for more information regarding the error.
+
+# Developer Notes
+- WIP 
